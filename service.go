@@ -169,31 +169,42 @@ func errorExit(err error) {
 
 func (s *service) formatOutput(rx []byte) string {
 	var output string
-	//Reverse UID in flag set
-	if s.flags.Reverse {
-		for i, j := 0, len(rx)-1; i < j; i, j = i+1, j-1 {
-			rx[i], rx[j] = rx[j], rx[i]
+	
+	if s.flags.Decimal {
+		// For decimal format: reverse bytes (little-endian to big-endian) and convert to integer
+		// Make a copy to avoid modifying the original slice
+		reversed := make([]byte, len(rx))
+		copy(reversed, rx)
+		// Reverse byte order (little-endian to big-endian)
+		for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+			reversed[i], reversed[j] = reversed[j], reversed[i]
 		}
-	}
+		// Convert bytes to big-endian integer
+		var num uint64
+		for _, b := range reversed {
+			num = (num << 8) | uint64(b)
+		}
+		output = fmt.Sprintf("%d", num)
+	} else {
+		// For hex format: apply reverse flag if set
+		if s.flags.Reverse {
+			for i, j := 0, len(rx)-1; i < j; i, j = i+1, j-1 {
+				rx[i], rx[j] = rx[j], rx[i]
+			}
+		}
 
-	for i, rxByte := range rx {
-		var byteStr string
-		if s.flags.Decimal {
-			byteStr = fmt.Sprintf("%03d", rxByte)
-		} else {
+		for i, rxByte := range rx {
+			var byteStr string
 			if s.flags.CapsLock {
 				byteStr = fmt.Sprintf("%02X", rxByte)
 			} else {
 				byteStr = fmt.Sprintf("%02x", rxByte)
-
 			}
-
+			output = output + byteStr
+			if i < len(rx)-1 {
+				output = output + s.flags.InChar.Output()
+			}
 		}
-		output = output + byteStr
-		if i < len(rx)-1 {
-			output = output + s.flags.InChar.Output()
-		}
-
 	}
 
 	output = output + s.flags.EndChar.Output()
