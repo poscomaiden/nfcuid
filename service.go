@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 type Service interface {
 	Start()
+	StartAsync(ctx context.Context)
 	Flags() Flags
 }
 
@@ -162,6 +164,92 @@ func (s *service) Flags() Flags {
 	return s.flags
 }
 
+func (s *service) StartAsync(ctx context.Context) {
+	//Establish a context
+	scardCtx, err := scard.EstablishContext()
+	if err != nil {
+		// For tray mode, we should handle errors gracefully
+		// You could update tray status here
+		return
+	}
+	defer scardCtx.Release()
+
+	//List available readers
+	readers, err := scardCtx.ListReaders()
+	if err != nil {
+		return
+	}
+
+	if len(readers) < 1 {
+		return
+	}
+
+	// Auto-select device if not specified
+	deviceIndex := s.flags.Device
+	if deviceIndex == 0 && len(readers) > 0 {
+		deviceIndex = 1 // Auto-select first device in tray mode
+	}
+
+	if deviceIndex < 1 || deviceIndex > len(readers) {
+		return
+	}
+
+	selectedReaders := []string{readers[deviceIndex-1]}
+
+	// Update device menu if available
+	if deviceMenu != nil {
+		deviceMenu.SetTitle(fmt.Sprintf("Device: %s", readers[deviceIndex-1]))
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			index, err := waitUntilCardPresentWithContext(ctx, scardCtx, selectedReaders)
+			if err != nil {
+				return
+			}
+
+			//Connect to card
+			card, err := scardCtx.Connect(selectedReaders[index], scard.ShareShared, scard.ProtocolAny)
+			if err != nil {
+				continue
+			}
+
+			//GET DATA command
+			var cmd = []byte{0xFF, 0xCA, 0x00, 0x00, 0x00}
+
+			rsp, err := card.Transmit(cmd)
+			card.Disconnect(scard.ResetCard)
+			if err != nil {
+				continue
+			}
+
+			if len(rsp) < 2 {
+				continue
+			}
+
+			//Check response code - two last bytes of response
+			rspCodeBytes := rsp[len(rsp)-2 : len(rsp)]
+			successResponseCode := []byte{0x90, 0x00}
+			if !bytes.Equal(rspCodeBytes, successResponseCode) {
+				continue
+			}
+
+			uidBytes := rsp[0 : len(rsp)-2]
+			err = string2keyboard.KeyboardWrite(s.formatOutput(uidBytes))
+			if err != nil {
+				// Silent fail in tray mode
+				continue
+			}
+
+			//Wait while card will be released
+			waitUntilCardReleaseWithContext(ctx, scardCtx, selectedReaders, index)
+		}
+	}
+}
+
 func errorExit(err error) {
 	fmt.Println(err)
 	os.Exit(1)
@@ -248,6 +336,53 @@ func waitUntilCardRelease(ctx *scard.Context, readers []string, index int) error
 		err := ctx.GetStatusChange(rs, -1)
 		if err != nil {
 			return err
+		}
+	}
+}
+
+func waitUntilCardPresentWithContext(cancelCtx context.Context, ctx *scard.Context, readers []string) (int, error) {
+	rs := make([]scard.ReaderState, len(readers))
+	for i := range rs {
+		rs[i].Reader = readers[i]
+		rs[i].CurrentState = scard.StateUnaware
+	}
+
+	for {
+		select {
+		case <-cancelCtx.Done():
+			return -1, cancelCtx.Err()
+		default:
+			for i := range rs {
+				if rs[i].EventState&scard.StatePresent != 0 {
+					return i, nil
+				}
+				rs[i].CurrentState = rs[i].EventState
+			}
+			err := ctx.GetStatusChange(rs, 100) // Check every 100ms to allow context cancellation
+			if err != nil {
+				return -1, err
+			}
+		}
+	}
+}
+
+func waitUntilCardReleaseWithContext(cancelCtx context.Context, ctx *scard.Context, readers []string, index int) {
+	rs := make([]scard.ReaderState, 1)
+
+	rs[0].Reader = readers[index]
+	rs[0].CurrentState = scard.StatePresent
+
+	for {
+		select {
+		case <-cancelCtx.Done():
+			return
+		default:
+			if rs[0].EventState&scard.StateEmpty != 0 {
+				return
+			}
+			rs[0].CurrentState = rs[0].EventState
+
+			ctx.GetStatusChange(rs, 100) // Check every 100ms to allow context cancellation
 		}
 	}
 }

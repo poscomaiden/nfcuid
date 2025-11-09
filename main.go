@@ -3,11 +3,14 @@ package main
 import (
 	"errors"
 	"flag"
+
+	"github.com/getlantern/systray"
 )
 
 func main() {
 	var appFlags Flags
 	var endChar, inChar string
+	var useTray bool
 	var ok bool
 	//Read application flags
 	flag.StringVar(&endChar, "end-char", "none", "Character at the end of UID. Options: "+CharFlagOptions())
@@ -16,6 +19,7 @@ func main() {
 	flag.BoolVar(&appFlags.Reverse, "reverse", false, "UID reverse order")
 	flag.BoolVar(&appFlags.Decimal, "decimal", false, "UID in decimal format")
 	flag.IntVar(&appFlags.Device, "device", 0, "Device number to use")
+	flag.BoolVar(&useTray, "tray", false, "Run in system tray")
 	flag.Parse()
 
 	//Check flags
@@ -30,7 +34,15 @@ func main() {
 		return
 	}
 
-	service := NewService(appFlags)
-	service.Start()
+	if useTray {
+		// Store flags for tray mode
+		currentFlags = appFlags
+		// Run system tray
+		systray.Run(onReady, onExit)
+	} else {
+		// Run in console mode
+		service := NewService(appFlags)
+		service.Start()
+	}
 
 }
